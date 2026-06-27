@@ -823,7 +823,7 @@ void Application::HandleWakeWordDetectedEvent() {
     }
 }
 
-void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+void Application::ContinueWakeWordInvoke(const std::string& wake_word, bool send_wake_word_data) {
     // Check state again in case it was changed during scheduling
     if (GetDeviceState() != kDeviceStateConnecting) {
         return;
@@ -843,8 +843,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
 #if CONFIG_SEND_WAKE_WORD_DATA
     // Encode and send the wake word data to the server
-    while (auto packet = audio_service_.PopWakeWordPacket()) {
-        protocol_->SendAudio(std::move(packet));
+    if (send_wake_word_data) {
+        while (auto packet = audio_service_.PopWakeWordPacket()) {
+            protocol_->SendAudio(std::move(packet));
+        }
     }
     // Set the chat state to wake word detected
     protocol_->SendWakeWordDetected(wake_word);
@@ -1027,30 +1029,35 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
     }
 
     auto state = GetDeviceState();
+    ESP_LOGI(TAG, "Wake word invoked: %s (state: %d)", wake_word.c_str(), (int)state);
     
     if (state == kDeviceStateIdle) {
-        audio_service_.EncodeWakeWord();
-
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
             Schedule([this, wake_word]() {
-                ContinueWakeWordInvoke(wake_word);
+                ContinueWakeWordInvoke(wake_word, false);
             });
             return;
         }
         // Channel already opened, continue directly
-        ContinueWakeWordInvoke(wake_word);
-    } else if (state == kDeviceStateSpeaking) {
-        Schedule([this]() {
-            AbortSpeaking(kAbortReasonNone);
-        });
-    } else if (state == kDeviceStateListening) {   
-        Schedule([this]() {
-            if (protocol_) {
-                protocol_->CloseAudioChannel();
-            }
-        });
+        ContinueWakeWordInvoke(wake_word, false);
+    } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
+        AbortSpeaking(kAbortReasonWakeWordDetected);
+        // Clear send queue to avoid sending residues to server
+        while (audio_service_.PopPacketFromSendQueue());
+
+        if (state == kDeviceStateListening) {
+            protocol_->SendStartListening(GetDefaultListeningMode());
+            audio_service_.ResetDecoder();
+            audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+            audio_service_.EnableWakeWordDetection(true);
+        } else {
+            play_popup_on_listening_ = true;
+            SetListeningMode(GetDefaultListeningMode());
+        }
+    } else if (state == kDeviceStateActivating) {
+        SetDeviceState(kDeviceStateIdle);
     }
 }
 
@@ -1128,4 +1135,3 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
-

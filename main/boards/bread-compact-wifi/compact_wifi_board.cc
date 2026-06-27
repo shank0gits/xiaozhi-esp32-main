@@ -110,10 +110,7 @@ private:
             app.ToggleChatState();
         });
         touch_button_.OnPressDown([this]() {
-            Application::GetInstance().StartListening();
-        });
-        touch_button_.OnPressUp([this]() {
-            Application::GetInstance().StopListening();
+            Application::GetInstance().WakeWordInvoke("touch");
         });
 
         volume_up_button_.OnClick([this]() {
